@@ -248,24 +248,24 @@ private slots:
         flick->setProperty("contentY", 200.0);
 
         const QPointF position(window->width() / 2.0, window->height() / 2.0);
-        sendTouchpadWheel(window, position, -8, Qt::ScrollBegin);
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
         QTest::qWait(20);
-        sendTouchpadWheel(window, position, -10, Qt::ScrollUpdate);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
         QTest::qWait(20);
-        sendTouchpadWheel(window, position, -10, Qt::ScrollUpdate);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
 
         const qreal gestureEndY = flick->property("contentY").toReal();
-        QVERIFY2(qAbs(gestureEndY - 256.0) <= 2.0,
-                 qPrintable(QStringLiteral("Expected scaled contentY near 256, got %1")
+        QVERIFY2(qAbs(gestureEndY - 380.0) <= 2.0,
+                 qPrintable(QStringLiteral("Expected angle-scaled contentY near 380, got %1")
                                 .arg(gestureEndY)));
 
-        sendTouchpadWheel(window, position, 0, Qt::ScrollEnd);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
         QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentY").toReal()
                                  > gestureEndY + 5.0, 500);
 
         // Platform momentum replaces the fallback rather than adding to it.
-        sendTouchpadWheel(window, position, -2, Qt::ScrollBegin);
-        sendTouchpadWheel(window, position, -6, Qt::ScrollMomentum);
+        sendTouchpadWheel(window, position, -2, -24, Qt::ScrollBegin);
+        sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);
         const qreal platformMomentumY = flick->property("contentY").toReal();
         QVERIFY(flick->property("platformMomentumActive").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!flick->property("platformMomentumActive").toBool(),
@@ -303,9 +303,10 @@ private slots:
 
 private:
     static void sendTouchpadWheel(QQuickWindow *window, const QPointF &position,
-                                  int pixelDeltaY, Qt::ScrollPhase phase) {
+                                  int pixelDeltaY, int angleDeltaY,
+                                  Qt::ScrollPhase phase) {
         QWheelEvent event(position, window->mapToGlobal(position),
-                          QPoint(0, pixelDeltaY), QPoint(), Qt::NoButton,
+                          QPoint(0, pixelDeltaY), QPoint(0, angleDeltaY), Qt::NoButton,
                           Qt::NoModifier, phase, false);
         QCoreApplication::sendEvent(window, &event);
     }

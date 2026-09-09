@@ -378,10 +378,14 @@ ApplicationWindow {
             // the new curve, so sustained spinning keeps picking up speed.
             readonly property real wheelStep: win.scaledSize(120)
 
-            // Pixel-precise touchpad deltas follow the fingers directly at a
-            // larger scale. Recent deltas provide the velocity for a short,
+            // Wayland/libinput pixel deltas are too small for comfortable
+            // scrolling on some touchpads. Follow Kirigami's desktop behavior:
+            // prefer the simultaneous angle delta at the standard three lines
+            // of 20px per notch, with a scaled pixel fallback when unavailable.
+            // Recent movement provides the velocity for a short,
             // frame-rate-independent coast when the gesture ends.
-            readonly property real touchpadScale: 2.0
+            readonly property real touchpadStep: win.scaledSize(60)
+            readonly property real touchpadPixelFallbackScale: 2.0
             readonly property int touchpadEventGapMs: 80
             readonly property real touchpadVelocityBlend: 0.35
             readonly property real touchpadMomentumDecay: 0.90
@@ -549,7 +553,7 @@ ApplicationWindow {
                     touchpadGestureActive = false;
                     platformMomentumActive = true;
                     touchpadEventGap.restart();
-                    applyTouchpadDelta(wheel.pixelDelta.y);
+                    applyTouchpadDelta(touchpadDelta(wheel));
                     return;
                 }
 
@@ -563,7 +567,8 @@ ApplicationWindow {
 
                 if (wheel.pixelDelta.y !== 0) {
                     var now = Date.now();
-                    var movement = -wheel.pixelDelta.y * touchpadScale;
+                    var delta = touchpadDelta(wheel);
+                    var movement = -delta;
                     var elapsed = now - touchpadLastEventTime;
                     if (elapsed > 0 && elapsed <= touchpadEventGapMs) {
                         var measuredVelocity = movement * 1000 / elapsed;
@@ -571,7 +576,7 @@ ApplicationWindow {
                             * touchpadVelocityBlend;
                     }
                     touchpadLastEventTime = now;
-                    applyTouchpadDelta(wheel.pixelDelta.y);
+                    applyTouchpadDelta(delta);
                     touchpadEventGap.restart();
                 }
 
@@ -581,10 +586,16 @@ ApplicationWindow {
                 }
             }
 
-            function applyTouchpadDelta(pixelDeltaY) {
+            function touchpadDelta(wheel) {
+                if (wheel.angleDelta.y !== 0)
+                    return wheel.angleDelta.y / 120 * touchpadStep;
+                return wheel.pixelDelta.y * touchpadPixelFallbackScale;
+            }
+
+            function applyTouchpadDelta(deltaY) {
                 wheelScroll.stop();
                 var maxY = Math.max(0, contentHeight - height);
-                var target = clampContentY(contentY - pixelDeltaY * touchpadScale);
+                var target = clampContentY(contentY - deltaY);
                 contentY = target === 0 || target === maxY ? target : snapToPixel(target);
                 if (target === 0 || target === maxY)
                     touchpadVelocity = 0;
