@@ -279,16 +279,28 @@ private slots:
         window->requestActivate();
         QTRY_VERIFY(window->isActive());
 
+        QObject *editor = root->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        const QString selectedFont = backend.availableFonts().value(1);
+        QVERIFY(!selectedFont.isEmpty());
+        backend.setEditorFont(selectedFont);
+        backend.setTextScale(1.5);
+
         QCOMPARE(backend.editorFontSize(), 20);
         QTest::keyClick(window, Qt::Key_Equal, Qt::ControlModifier);
         QCOMPARE(backend.editorFontSize(), 22);
         QTest::keyClick(window, Qt::Key_Plus, Qt::ControlModifier);
         QCOMPARE(backend.editorFontSize(), 24);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 36);
+        QCOMPARE(editor->property("font").value<QFont>().family(), selectedFont);
         QTest::keyClick(window, Qt::Key_Minus, Qt::ControlModifier);
         QCOMPARE(backend.editorFontSize(), 22);
         QTest::keyClick(window, Qt::Key_0, Qt::ControlModifier);
         QCOMPARE(backend.editorFontSize(), 20);
         QCOMPARE(QSettings().value(QStringLiteral("editor/fontSize")).toInt(), 20);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 30);
+        QCOMPARE(Backend().editorFont(), selectedFont);
+        QCOMPARE(Backend().editorFontSize(), 20);
     }
 
     void persistsEditorFontSizeAcrossBackendInstances() {
