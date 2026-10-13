@@ -22,6 +22,10 @@ private slots:
                            m_settingsDirectory.path());
     }
 
+    void init() {
+        QSettings().clear();
+    }
+
     void countsWords() {
         QCOMPARE(Backend::countWords(QStringLiteral("one two-three don't 42")), 4);
         QCOMPARE(Backend::countWords(QStringLiteral("你好 世界")), 2);
@@ -338,6 +342,67 @@ private slots:
         sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
         QTest::qWait(100);
         QCOMPARE(flick->property("contentY").toReal(), 0.0);
+    }
+
+    void dispatchesEditorFontSizeShortcuts() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+
+        auto *window = qobject_cast<QQuickWindow *>(root.data());
+        QVERIFY(window);
+        window->requestActivate();
+        QTRY_VERIFY(window->isActive());
+
+        QObject *editor = root->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        const QString selectedFont = backend.availableFonts().value(1);
+        QVERIFY(!selectedFont.isEmpty());
+        backend.setEditorFont(selectedFont);
+        backend.setTextScale(1.5);
+
+        QCOMPARE(backend.editorFontSize(), 20);
+        QTest::keyClick(window, Qt::Key_Equal, Qt::ControlModifier);
+        QCOMPARE(backend.editorFontSize(), 22);
+        QTest::keyClick(window, Qt::Key_Plus, Qt::ControlModifier);
+        QCOMPARE(backend.editorFontSize(), 24);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 36);
+        QCOMPARE(editor->property("font").value<QFont>().family(), selectedFont);
+        QTest::keyClick(window, Qt::Key_Minus, Qt::ControlModifier);
+        QCOMPARE(backend.editorFontSize(), 22);
+        QTest::keyClick(window, Qt::Key_0, Qt::ControlModifier);
+        QCOMPARE(backend.editorFontSize(), 20);
+        QCOMPARE(QSettings().value(QStringLiteral("editor/fontSize")).toInt(), 20);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 30);
+        QCOMPARE(Backend().editorFont(), selectedFont);
+        QCOMPARE(Backend().editorFontSize(), 20);
+    }
+
+    void persistsEditorFontSizeAcrossBackendInstances() {
+        {
+            Backend backend;
+            QCOMPARE(backend.editorFontSize(), 20);
+
+            QSignalSpy changedSpy(&backend, &Backend::editorFontSizeChanged);
+            backend.setEditorFontSize(28);
+            QCOMPARE(changedSpy.count(), 1);
+            QCOMPARE(QSettings().value(QStringLiteral("editor/fontSize")).toInt(), 28);
+        }
+
+        Backend restoredBackend;
+        QCOMPARE(restoredBackend.editorFontSize(), 28);
+
+        restoredBackend.setEditorFontSize(100);
+        QCOMPARE(restoredBackend.editorFontSize(), 48);
+        restoredBackend.setEditorFontSize(0);
+        QCOMPARE(restoredBackend.editorFontSize(), 10);
     }
 
     void remembersLastSaveDirectory() {

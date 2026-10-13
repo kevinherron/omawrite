@@ -55,6 +55,10 @@ const QStringList genericFontAliases = {QStringLiteral("Monospace"), QStringLite
 const QRegularExpression symbolFontName(
     QStringLiteral("symbol|dingbat|emoji|icon|awesome|^D050000L$"),
     QRegularExpression::CaseInsensitiveOption);
+const QString editorFontSizeSetting = QStringLiteral("editor/fontSize");
+constexpr int defaultEditorFontSize = 20;
+constexpr int minimumEditorFontSize = 10;
+constexpr int maximumEditorFontSize = 48;
 
 QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     QString candidate = clipboardText.trimmed();
@@ -96,6 +100,10 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     m_editorFont = !savedFont.isEmpty() && QFontDatabase::hasFamily(savedFont)
         ? savedFont
         : defaultEditorFont();
+    m_editorFontSize = qBound(minimumEditorFontSize,
+                              QSettings().value(editorFontSizeSetting,
+                                                defaultEditorFontSize).toInt(),
+                              maximumEditorFontSize);
 
     const QString stateDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(stateDirectory);
@@ -189,6 +197,21 @@ void Backend::setTextScale(qreal textScale) {
 
     m_textScale = textScale;
     emit textScaleChanged();
+}
+
+void Backend::setEditorFontSize(int editorFontSize) {
+    const int boundedSize = qBound(minimumEditorFontSize, editorFontSize,
+                                   maximumEditorFontSize);
+    if (m_editorFontSize == boundedSize)
+        return;
+
+    m_editorFontSize = boundedSize;
+    QSettings().setValue(editorFontSizeSetting, m_editorFontSize);
+    emit editorFontSizeChanged();
+}
+
+void Backend::resetEditorFontSize() {
+    setEditorFontSize(defaultEditorFontSize);
 }
 
 void Backend::attachDocument(QObject *textDocument) {
