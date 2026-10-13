@@ -39,6 +39,10 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool replaceOpen: false
     property bool awaitingPendingSave: false
+    property bool previewActive: false
+    property real editorScrollY: 0
+    property real previewScrollY: 0
+    property real previewScrollX: 0
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
@@ -90,6 +94,34 @@ ApplicationWindow {
         win.visibility = win.visibility === Window.FullScreen
             ? Window.Windowed
             : Window.FullScreen;
+    }
+
+    function focusDocument() {
+        if (previewActive)
+            renderedPreview.forceActiveFocus();
+        else
+            editor.forceActiveFocus();
+    }
+
+    function togglePreview() {
+        if (searchOpen)
+            closeSearch();
+        fontPicker.close();
+        if (previewActive) {
+            previewScrollY = editorFlick.contentY;
+            previewScrollX = editorFlick.contentX;
+        } else {
+            editorScrollY = editorFlick.contentY;
+        }
+        editorFlick.stopAnimatedScrolling();
+        previewActive = !previewActive;
+        focusDocument();
+        // Restore after the rendered document has finished laying out.
+        Qt.callLater(function() {
+            editorFlick.scrollTo(editorFlick.clampContentY(
+                previewActive ? previewScrollY : editorScrollY));
+            editorFlick.contentX = editorFlick.clampContentX(previewActive ? previewScrollX : 0);
+        });
     }
 
     function updateSearch() {
@@ -148,6 +180,8 @@ ApplicationWindow {
         sequence: "Ctrl+H"
         context: Qt.ApplicationShortcut
         onActivated: {
+            if (previewActive)
+                togglePreview();
             searchOpen = true;
             replaceOpen = true;
             searchField.forceActiveFocus();
@@ -176,18 +210,21 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+B"
         context: Qt.WindowShortcut
+        enabled: !win.previewActive
         onActivated: editor.wrapSelection("**", "**")
     }
 
     Shortcut {
         sequence: "Ctrl+I"
         context: Qt.WindowShortcut
+        enabled: !win.previewActive
         onActivated: editor.wrapSelection("*", "*")
     }
 
     Shortcut {
         sequence: "Ctrl+K"
         context: Qt.WindowShortcut
+        enabled: !win.previewActive
         onActivated: editor.insertLink()
     }
 
@@ -216,6 +253,12 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Ctrl+Shift+M"
+        context: Qt.WindowShortcut
+        onActivated: win.togglePreview()
+    }
+
+    Shortcut {
         sequence: "Ctrl+P"
         context: Qt.ApplicationShortcut
         onActivated: backend.printDocument()
@@ -230,12 +273,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Z"
         context: Qt.WindowShortcut
+        enabled: !win.previewActive
         onActivated: editor.undo()
     }
 
     Shortcut {
         sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
         context: Qt.WindowShortcut
+        enabled: !win.previewActive
         onActivated: editor.redo()
     }
 
@@ -243,6 +288,8 @@ ApplicationWindow {
         sequence: "Ctrl+F"
         context: Qt.ApplicationShortcut
         onActivated: {
+            if (previewActive)
+                togglePreview();
             searchOpen = true;
             searchField.forceActiveFocus();
             searchField.selectAll();
@@ -350,7 +397,7 @@ ApplicationWindow {
         standardButtons: Dialog.Close
         anchors.centerIn: parent
         contentItem: Label {
-            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl++ / Ctrl+=  Increase text size\nCtrl+-  Decrease text size\nCtrl+0  Reset text size\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
+            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl++ / Ctrl+=  Increase text size\nCtrl+-  Decrease text size\nCtrl+0  Reset text size\nCtrl+Shift+M  Toggle Preview\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
             lineHeight: 1.5
         }
     }
@@ -361,6 +408,7 @@ ApplicationWindow {
         Flickable {
             id: editorFlick
             objectName: "editorFlick"
+            readonly property var activeTextItem: win.previewActive ? renderedPreview : editor
             anchors.fill: parent
             anchors.leftMargin: 24
             anchors.rightMargin: 24
@@ -370,8 +418,8 @@ ApplicationWindow {
             anchors.topMargin: win.footerHeight
             anchors.bottomMargin: win.footerHeight
             clip: true
-            contentWidth: width
-            contentHeight: Math.max(height, editor.y + editor.implicitHeight + 220)
+            contentWidth: win.previewActive ? Math.max(width, renderedPreview.renderedWidth) : width
+            contentHeight: Math.max(height, activeTextItem.y + activeTextItem.implicitHeight + 220)
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
@@ -380,6 +428,10 @@ ApplicationWindow {
                 // that activity; linger briefly after the last event.
                 active: hovered || pressed || wheelScroll.running
                     || touchpadMomentum.running || scrollLinger.running
+            }
+            ScrollBar.horizontal: ScrollBar {
+                policy: ScrollBar.AsNeeded
+                active: hovered || pressed || scrollLinger.running
             }
 
             Timer {
@@ -563,6 +615,20 @@ ApplicationWindow {
                 }
             }
 
+            WheelHandler {
+                enabled: win.previewActive
+                orientation: Qt.Horizontal
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: function(wheel) {
+                    scrollLinger.restart();
+                    var delta = wheel.pixelDelta.x !== 0
+                        ? wheel.pixelDelta.x * editorFlick.touchpadPixelFallbackScale
+                        : wheel.angleDelta.x / 120 * editorFlick.wheelStep;
+                    editorFlick.contentX = editorFlick.clampContentX(editorFlick.contentX - delta);
+                    wheel.accepted = true;
+                }
+            }
+
             onMovementStarted: stopAnimatedScrolling()
 
             function scrollByTouchpad(wheel) {
@@ -669,6 +735,10 @@ ApplicationWindow {
                 return Math.max(0, Math.min(Math.max(0, contentHeight - height), y));
             }
 
+            function clampContentX(x) {
+                return Math.max(0, Math.min(Math.max(0, contentWidth - width), x));
+            }
+
             // Whole device pixels keep natively hinted glyphs from
             // re-rasterizing mid-animation, which reads as shimmer.
             function snapToPixel(y) {
@@ -685,19 +755,27 @@ ApplicationWindow {
             // bottom edge scrolls the page along with the text.
             function ensureCursorVisible() {
                 var margin = win.editorFontPixelSize * 2;
-                var cursorTop = editor.y + editor.cursorRectangle.y;
-                var cursorBottom = cursorTop + editor.cursorRectangle.height;
+                var cursorTop = activeTextItem.y + activeTextItem.cursorRectangle.y;
+                var cursorBottom = cursorTop + activeTextItem.cursorRectangle.height;
                 var maxContentY = Math.max(0, contentHeight - height);
 
                 if (cursorBottom + margin > contentY + height)
                     scrollTo(Math.min(maxContentY, cursorBottom + margin - height));
                 else if (cursorTop - margin < contentY)
                     scrollTo(Math.max(0, cursorTop - margin));
+
+                var cursorLeft = activeTextItem.x + activeTextItem.cursorRectangle.x;
+                var cursorRight = cursorLeft + activeTextItem.cursorRectangle.width;
+                if (cursorRight + margin > contentX + width)
+                    contentX = clampContentX(cursorRight + margin - width);
+                else if (cursorLeft - margin < contentX)
+                    contentX = clampContentX(cursorLeft - margin);
             }
 
             TextEdit {
                 id: editor
                 objectName: "sourceEditor"
+                visible: !win.previewActive
                 x: Math.round((editorFlick.width - width) / 2)
                 // The resting position counts from the window's top edge, so
                 // take back the top inset the Flickable already adds.
@@ -726,7 +804,10 @@ ApplicationWindow {
                     width: 1
                     color: win.strongTextColor
                 }
-                onCursorRectangleChanged: editorFlick.ensureCursorVisible()
+                onCursorRectangleChanged: {
+                    if (!win.previewActive)
+                        editorFlick.ensureCursorVisible();
+                }
                 onFontChanged: backend.documentFontChanged()
 
                 function replaceSelectionWith(replacement) {
@@ -963,6 +1044,41 @@ ApplicationWindow {
                     forceActiveFocus();
                 }
             }
+
+            TextEdit {
+                id: renderedPreview
+                objectName: "renderedPreview"
+                visible: win.previewActive
+                // Fenced code and tables can render wider than the writing
+                // column. Center their full extent, keeping long lines intact.
+                readonly property real renderedWidth: Math.max(width, contentWidth)
+                x: Math.max(0, Math.round((editorFlick.width - renderedWidth) / 2))
+                y: editor.y
+                width: editor.width
+                text: win.previewActive ? editor.text : ""
+                textFormat: TextEdit.MarkdownText
+                baseUrl: backend.fileUrl
+                readOnly: true
+                wrapMode: TextEdit.Wrap
+                selectByMouse: true
+                color: win.textColor
+                selectionColor: win.selectionFill
+                selectedTextColor: win.strongTextColor
+                font.family: backend.editorFont
+                font.pixelSize: win.editorFontPixelSize
+                renderType: editor.renderType
+                onLinkActivated: function(link) { backend.openExternalUrl(link); }
+                onCursorRectangleChanged: {
+                    if (win.previewActive)
+                        editorFlick.ensureCursorVisible();
+                }
+                Keys.onEscapePressed: win.togglePreview()
+
+                HoverHandler {
+                    cursorShape: renderedPreview.hoveredLink.length > 0
+                        ? Qt.PointingHandCursor : Qt.IBeamCursor
+                }
+            }
         }
 
         Row {
@@ -988,6 +1104,14 @@ ApplicationWindow {
                 iconColor: win.mutedColor
                 tooltip: "Open"
                 onClicked: backend.openDialog()
+            }
+
+            FooterIconButton {
+                objectName: "previewButton"
+                iconName: "preview"
+                iconColor: win.previewActive ? backend.themeAccent : win.mutedColor
+                tooltip: win.previewActive ? "Edit Markdown (Ctrl+Shift+M)" : "Preview Markdown (Ctrl+Shift+M)"
+                onClicked: win.togglePreview()
             }
 
             FooterIconButton {
@@ -1028,7 +1152,7 @@ ApplicationWindow {
             mutedColor: win.mutedColor
             highlightColor: backend.themeAccent
             onFontChosen: function(family) { backend.editorFont = family; }
-            onClosed: editor.forceActiveFocus()
+            onClosed: win.focusDocument()
         }
 
         Label {
