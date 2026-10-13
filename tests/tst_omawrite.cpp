@@ -3,7 +3,9 @@
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQuickWindow>
 #include <QQuickStyle>
+#include <QWheelEvent>
 
 #include "backend.h"
 #include "markdownhighlighter.h"
@@ -257,6 +259,87 @@ private slots:
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 15);
     }
 
+    void scalesTouchpadScrollingAndCarriesMomentum() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+
+        auto *window = qobject_cast<QQuickWindow *>(root.data());
+        QObject *editor = root->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QObject *flick = root->findChild<QObject *>(QStringLiteral("editorFlick"));
+        QVERIFY(window);
+        QVERIFY(editor);
+        QVERIFY(flick);
+
+        QStringList lines;
+        for (int i = 0; i < 200; ++i)
+            lines.append(QStringLiteral("A line long enough to make the editor scroll."));
+        editor->setProperty("text", lines.join(QLatin1Char('\n')));
+        QTRY_VERIFY(flick->property("contentHeight").toReal()
+                    > flick->property("height").toReal() + 400);
+        flick->setProperty("contentY", 200.0);
+
+        const QPointF position(window->width() / 2.0, window->height() / 2.0);
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+
+        const qreal gestureEndY = flick->property("contentY").toReal();
+        QVERIFY2(qAbs(gestureEndY - 380.0) <= 2.0,
+                 qPrintable(QStringLiteral("Expected angle-scaled contentY near 380, got %1")
+                                .arg(gestureEndY)));
+
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentY").toReal()
+                                 > gestureEndY + 5.0, 500);
+
+        // Platform momentum replaces the fallback rather than adding to it.
+        sendTouchpadWheel(window, position, -2, -24, Qt::ScrollBegin);
+        sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);
+        const qreal platformMomentumY = flick->property("contentY").toReal();
+        QVERIFY(flick->property("platformMomentumActive").toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!flick->property("platformMomentumActive").toBool(),
+                                 300);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - platformMomentumY) <= 1.0);
+
+        // Pixel-only platforms keep direct movement and coast after an event gap.
+        flick->setProperty("contentY", 200.0);
+        sendTouchpadWheel(window, position, -8, 0, Qt::NoScrollPhase);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, 0, Qt::NoScrollPhase);
+        const qreal pixelEndY = flick->property("contentY").toReal();
+        QVERIFY(qAbs(pixelEndY - 236.0) <= 2.0);
+        QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentY").toReal() > pixelEndY + 5, 500);
+
+        // A new gesture stops the coast immediately, even before movement.
+        sendTouchpadWheel(window, position, 1, 0, Qt::ScrollBegin);
+        const qreal stoppedY = flick->property("contentY").toReal();
+        QTest::qWait(40);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - stoppedY) <= 1.0);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+
+        // Mouse-wheel input keeps the upstream animated 120px notch distance.
+        flick->setProperty("contentY", 200.0);
+        sendTouchpadWheel(window, position, 0, -120, Qt::NoScrollPhase);
+        QTRY_VERIFY_WITH_TIMEOUT(qAbs(flick->property("contentY").toReal() - 320.0) <= 2.0, 500);
+
+        // Momentum and direct movement never overshoot the content bounds.
+        sendTouchpadWheel(window, position, 10000, 0, Qt::ScrollBegin);
+        QCOMPARE(flick->property("contentY").toReal(), 0.0);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTest::qWait(100);
+        QCOMPARE(flick->property("contentY").toReal(), 0.0);
+    }
+
     void remembersLastSaveDirectory() {
         QTemporaryDir saveDirectory;
         QVERIFY(saveDirectory.isValid());
@@ -286,6 +369,15 @@ private slots:
     }
 
 private:
+    static void sendTouchpadWheel(QQuickWindow *window, const QPointF &position,
+                                  int pixelDeltaY, int angleDeltaY,
+                                  Qt::ScrollPhase phase) {
+        QWheelEvent event(position, window->mapToGlobal(position),
+                          QPoint(0, pixelDeltaY), QPoint(0, angleDeltaY), Qt::NoButton,
+                          Qt::NoModifier, phase, false);
+        QCoreApplication::sendEvent(window, &event);
+    }
+
     QTemporaryDir m_settingsDirectory;
 };
 
