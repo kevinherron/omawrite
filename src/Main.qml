@@ -562,6 +562,7 @@ ApplicationWindow {
                 }
 
                 if (wheel.phase === Qt.ScrollBegin || !touchpadGestureActive) {
+                    touchpadEventGap.stop();
                     touchpadMomentum.stop();
                     platformMomentumActive = false;
                     touchpadGestureActive = true;

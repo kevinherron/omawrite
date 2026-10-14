@@ -365,6 +365,17 @@ private slots:
                                  300);
         QVERIFY(qAbs(flick->property("contentY").toReal() - platformMomentumY) <= 1.0);
 
+        // Fingers landing during platform momentum aren't ended by its timer.
+        sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+        const qreal interruptedY = flick->property("contentY").toReal();
+        QTest::qWait(200);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - interruptedY) <= 1.0);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTest::qWait(600);
+
         // Pixel-only platforms keep direct movement and coast after an event gap.
         flick->setProperty("contentY", 200.0);
         sendTouchpadWheel(window, position, -8, 0, Qt::NoScrollPhase);
