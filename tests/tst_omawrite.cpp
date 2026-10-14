@@ -316,6 +316,17 @@ private slots:
         QTest::qWait(100);
         QVERIFY(qAbs(flick->property("contentY").toReal() - restingY) <= 1.0);
 
+        // A sideways-only update mid-swipe keeps the gesture and its momentum.
+        flick->setProperty("contentY", 200.0);
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollUpdate, 5);
+        const qreal sidewaysY = flick->property("contentY").toReal();
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentY").toReal() > sidewaysY + 5.0, 500);
+        QTest::qWait(600);
+
         // A small nudge after a pause doesn't revive the earlier swipe's speed.
         sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
         QTest::qWait(20);
@@ -406,9 +417,10 @@ private slots:
 private:
     static void sendTouchpadWheel(QQuickWindow *window, const QPointF &position,
                                   int pixelDeltaY, int angleDeltaY,
-                                  Qt::ScrollPhase phase) {
+                                  Qt::ScrollPhase phase, int pixelDeltaX = 0) {
         QWheelEvent event(position, window->mapToGlobal(position),
-                          QPoint(0, pixelDeltaY), QPoint(0, angleDeltaY), Qt::NoButton,
+                          QPoint(pixelDeltaX, pixelDeltaY), QPoint(pixelDeltaX * 12, angleDeltaY),
+                          Qt::NoButton,
                           Qt::NoModifier, phase, false);
         QCoreApplication::sendEvent(window, &event);
     }

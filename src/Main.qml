@@ -425,7 +425,8 @@ ApplicationWindow {
                         return;
 
                     var maxY = Math.max(0, editorFlick.contentHeight - editorFlick.height);
-                    var nextY = editorFlick.clampContentY(editorFlick.contentY + velocity * dt);
+                    var nextY = editorFlick.clampContentY(editorFlick.exactTouchpadY() + velocity * dt);
+                    editorFlick.touchpadExactY = nextY;
                     if ((velocity < 0 && nextY <= 0)
                             || (velocity > 0 && nextY >= maxY)) {
                         editorFlick.contentY = nextY;
@@ -537,8 +538,10 @@ ApplicationWindow {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: function(wheel) {
                     scrollLinger.restart();
-                    if (wheel.pixelDelta.y !== 0 || wheel.phase === Qt.ScrollMomentum
-                            || wheel.phase === Qt.ScrollEnd)
+                    // Phased events are always fingers, even a diagonal
+                    // update that carries no vertical movement.
+                    if (wheel.pixelDelta.y !== 0 || wheel.pixelDelta.x !== 0
+                            || wheel.phase !== Qt.NoScrollPhase)
                         editorFlick.scrollByTouchpad(wheel);
                     else
                         editorFlick.scrollByWheel(wheel);
@@ -604,15 +607,18 @@ ApplicationWindow {
                 return wheel.pixelDelta.y * touchpadPixelFallbackScale;
             }
 
-            function applyTouchpadDelta(deltaY) {
-                wheelScroll.stop();
-                // Keep the unsnapped position so slow, sub-pixel movement
-                // adds up instead of rounding away; resync if anything else
-                // moved the view.
+            // The unsnapped position, so slow, sub-pixel movement adds up
+            // instead of rounding away. Resyncs if anything else moved the view.
+            function exactTouchpadY() {
                 if (snapToPixel(touchpadExactY) !== contentY)
                     touchpadExactY = contentY;
+                return touchpadExactY;
+            }
+
+            function applyTouchpadDelta(deltaY) {
+                wheelScroll.stop();
                 var maxY = Math.max(0, contentHeight - height);
-                var target = clampContentY(touchpadExactY - deltaY);
+                var target = clampContentY(exactTouchpadY() - deltaY);
                 touchpadExactY = target;
                 contentY = target === 0 || target === maxY ? target : snapToPixel(target);
                 if (target === 0 || target === maxY)
