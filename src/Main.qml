@@ -395,6 +395,7 @@ ApplicationWindow {
             property bool platformMomentumActive: false
             property real touchpadVelocity: 0
             property double touchpadLastEventTime: 0
+            property real touchpadExactY: 0
 
             Timer {
                 id: touchpadEventGap
@@ -605,8 +606,14 @@ ApplicationWindow {
 
             function applyTouchpadDelta(deltaY) {
                 wheelScroll.stop();
+                // Keep the unsnapped position so slow, sub-pixel movement
+                // adds up instead of rounding away; resync if anything else
+                // moved the view.
+                if (snapToPixel(touchpadExactY) !== contentY)
+                    touchpadExactY = contentY;
                 var maxY = Math.max(0, contentHeight - height);
-                var target = clampContentY(contentY - deltaY);
+                var target = clampContentY(touchpadExactY - deltaY);
+                touchpadExactY = target;
                 contentY = target === 0 || target === maxY ? target : snapToPixel(target);
                 if (target === 0 || target === maxY)
                     touchpadVelocity = 0;

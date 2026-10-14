@@ -327,6 +327,16 @@ private slots:
         QTest::qWait(100);
         QVERIFY(qAbs(flick->property("contentY").toReal() - nudgedY) <= 1.0);
 
+        // Sub-pixel movement adds up in both directions instead of rounding away.
+        flick->setProperty("contentY", 200.0);
+        for (int i = 0; i < 8; ++i)
+            sendTouchpadWheel(window, position, 1, 1, Qt::ScrollUpdate);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - 196.0) <= 1.0);
+        for (int i = 0; i < 8; ++i)
+            sendTouchpadWheel(window, position, -1, -1, Qt::ScrollUpdate);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - 200.0) <= 1.0);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+
         // Platform momentum replaces the fallback rather than adding to it.
         sendTouchpadWheel(window, position, -2, -24, Qt::ScrollBegin);
         sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);
