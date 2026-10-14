@@ -316,6 +316,17 @@ private slots:
         QTest::qWait(100);
         QVERIFY(qAbs(flick->property("contentY").toReal() - restingY) <= 1.0);
 
+        // A small nudge after a pause doesn't revive the earlier swipe's speed.
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+        QTest::qWait(200);
+        sendTouchpadWheel(window, position, -1, -1, Qt::ScrollUpdate);
+        const qreal nudgedY = flick->property("contentY").toReal();
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTest::qWait(100);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - nudgedY) <= 1.0);
+
         // Platform momentum replaces the fallback rather than adding to it.
         sendTouchpadWheel(window, position, -2, -24, Qt::ScrollBegin);
         sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);

@@ -574,6 +574,9 @@ ApplicationWindow {
                         var measuredVelocity = movement * 1000 / elapsed;
                         touchpadVelocity += (measuredVelocity - touchpadVelocity)
                             * touchpadVelocityBlend;
+                    } else if (elapsed > touchpadEventGapMs) {
+                        // Movement resumed after a pause starts fresh.
+                        touchpadVelocity = 0;
                     }
                     touchpadLastEventTime = now;
                     applyTouchpadDelta(delta);
