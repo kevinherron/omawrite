@@ -577,11 +577,19 @@ ApplicationWindow {
                     }
                     touchpadLastEventTime = now;
                     applyTouchpadDelta(delta);
-                    touchpadEventGap.restart();
+                    // Platforms that report phases say when the fingers lift,
+                    // so only phaseless events need a gap to stand in for it.
+                    // Otherwise a pause mid-swipe would coast under resting
+                    // fingers.
+                    if (wheel.phase === Qt.NoScrollPhase)
+                        touchpadEventGap.restart();
                 }
 
                 if (wheel.phase === Qt.ScrollEnd) {
                     touchpadEventGap.stop();
+                    // Fingers that rested before lifting carry no velocity.
+                    if (Date.now() - touchpadLastEventTime > touchpadEventGapMs)
+                        touchpadVelocity = 0;
                     finishTouchpadGesture();
                 }
             }

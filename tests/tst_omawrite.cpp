@@ -302,6 +302,20 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentY").toReal()
                                  > gestureEndY + 5.0, 500);
 
+        // With scroll phases, a pause mid-swipe never coasts; only lifting does.
+        flick->setProperty("contentY", 200.0);
+        sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(window, position, -10, -120, Qt::ScrollUpdate);
+        const qreal restingY = flick->property("contentY").toReal();
+        QTest::qWait(200);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - restingY) <= 1.0);
+
+        // Lifting after that pause doesn't coast on the stale velocity.
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTest::qWait(100);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - restingY) <= 1.0);
+
         // Platform momentum replaces the fallback rather than adding to it.
         sendTouchpadWheel(window, position, -2, -24, Qt::ScrollBegin);
         sendTouchpadWheel(window, position, -6, -72, Qt::ScrollMomentum);
