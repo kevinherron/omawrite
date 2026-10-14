@@ -569,9 +569,9 @@ ApplicationWindow {
                     touchpadLastEventTime = Date.now();
                 }
 
-                if (wheel.pixelDelta.y !== 0) {
+                var delta = touchpadDelta(wheel);
+                if (delta !== 0) {
                     var now = Date.now();
-                    var delta = touchpadDelta(wheel);
                     var movement = -delta;
                     var elapsed = now - touchpadLastEventTime;
                     if (elapsed > 0 && elapsed <= touchpadEventGapMs) {

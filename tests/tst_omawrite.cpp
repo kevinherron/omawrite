@@ -316,6 +316,14 @@ private slots:
         QTest::qWait(100);
         QVERIFY(qAbs(flick->property("contentY").toReal() - restingY) <= 1.0);
 
+        // Fine movement that rounds to no pixels still moves by its angle.
+        flick->setProperty("contentY", 200.0);
+        sendTouchpadWheel(window, position, 0, -24, Qt::ScrollBegin);
+        sendTouchpadWheel(window, position, 0, -24, Qt::ScrollUpdate);
+        QVERIFY(qAbs(flick->property("contentY").toReal() - 224.0) <= 1.0);
+        sendTouchpadWheel(window, position, 0, 0, Qt::ScrollEnd);
+        QTest::qWait(600);
+
         // A sideways-only update mid-swipe keeps the gesture and its momentum.
         flick->setProperty("contentY", 200.0);
         sendTouchpadWheel(window, position, -8, -120, Qt::ScrollBegin);
