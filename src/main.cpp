@@ -9,13 +9,24 @@
 #include <QUrl>
 #include <QWindow>
 #include <QFile>
+#include <cstdio>
+#include <cstring>
 
 #include "backend.h"
 #include "systemtheme.h"
 
+#define OMAWRITE_VERSION "0.6.0"
+
 int main(int argc, char *argv[]) {
+    // Answered before the application exists, so it needs no display.
+    if (argc > 1 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-v"))) {
+        printf("omawrite %s\n", OMAWRITE_VERSION);
+        return 0;
+    }
+
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("omawrite"));
+    app.setApplicationVersion(QStringLiteral(OMAWRITE_VERSION));
     app.setDesktopFileName(QStringLiteral("omawrite"));
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
 
