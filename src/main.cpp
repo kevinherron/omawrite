@@ -11,11 +11,20 @@
 #include <QFile>
 
 #include "backend.h"
+#include "cli.h"
 #include "systemtheme.h"
 
+#define OMAWRITE_VERSION "0.7.0"
+
 int main(int argc, char *argv[]) {
+    // Answered before the application exists, so they need no display.
+    if (const std::optional<int> exitCode =
+            Cli::handleArguments(argc, argv, QStringLiteral(OMAWRITE_VERSION)))
+        return *exitCode;
+
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("omawrite"));
+    app.setApplicationVersion(QStringLiteral(OMAWRITE_VERSION));
     app.setDesktopFileName(QStringLiteral("omawrite"));
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
 
@@ -34,8 +43,8 @@ int main(int argc, char *argv[]) {
     QObject::connect(&systemTheme, &SystemTheme::darkModeChanged, &backend,
                      &Backend::setDarkMode);
 
-    // Carry the desktop's text scale into the default font, so the chrome that
-    // inherits it (dialog titles, buttons) grows along with the writing area.
+    // Carry the text scale into the default font, so the chrome that inherits
+    // it (dialog titles, buttons) grows along with the writing area.
     const QFont interfaceFont(QStringLiteral("IBM Plex Mono"));
     const qreal basePointSize = interfaceFont.pointSizeF() > 0
         ? interfaceFont.pointSizeF()
@@ -45,13 +54,16 @@ int main(int argc, char *argv[]) {
         scaled.setPointSizeF(basePointSize * textScale);
         app.setFont(scaled);
     };
-    applyInterfaceFont(systemTheme.textScale());
 
-    backend.setTextScale(systemTheme.textScale());
+    // The desktop sets the baseline; the backend folds the user's own text
+    // size into it and reports the total.
+    backend.setDesktopTextScale(systemTheme.textScale());
+    applyInterfaceFont(backend.textScale());
     QObject::connect(&systemTheme, &SystemTheme::textScaleChanged, &backend,
-                     [&backend, applyInterfaceFont](qreal textScale) {
-        applyInterfaceFont(textScale);
-        backend.setTextScale(textScale);
+                     &Backend::setDesktopTextScale);
+    QObject::connect(&backend, &Backend::textScaleChanged, &app,
+                     [&backend, applyInterfaceFont]() {
+        applyInterfaceFont(backend.textScale());
     });
 
     QQmlApplicationEngine engine;
@@ -72,8 +84,8 @@ int main(int argc, char *argv[]) {
     backend.setParentWindow(qobject_cast<QWindow *>(engine.rootObjects().constFirst()));
 
     const QStringList args = app.arguments();
-    if (args.size() > 1 && !backend.modified())
-        backend.open(QUrl::fromLocalFile(args.at(1)));
+    if (args.size() > 1)
+        backend.openOrStartFile(QUrl::fromLocalFile(args.at(1)));
 
     return app.exec();
 }

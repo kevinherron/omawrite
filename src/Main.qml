@@ -18,18 +18,22 @@ ApplicationWindow {
     readonly property bool darkMode: backend.darkMode
     readonly property color pageColor: backend.themeBackground
     readonly property color textColor: backend.themeForeground
-    readonly property color strongTextColor: backend.themeForeground
     readonly property color mutedColor: darkMode ? "#909191" : "#aeb1b5"
     readonly property color selectionFill: backend.themeSelection
+    readonly property color selectionTextColor: backend.themeSelectionForeground
     // The desktop's text size knob (GNOME's text-scaling-factor, which
     // `omarchy display text size` drives) anchored so its 12px default leaves
-    // the app at the sizes it was designed around.
+    // the app at the sizes it was designed around, times the user's own
+    // text size set with Ctrl+= / Ctrl+- / Ctrl+wheel.
     readonly property real textScale: backend.textScale
-    readonly property int editorFontPixelSize: scaledSize(backend.editorFontSize)
+    readonly property int editorFontPixelSize: scaledSize(20)
     readonly property int footerHeight: scaledSize(32)
+    // Never wider than the Flickable's viewport, whatever the floor asks for:
+    // a tiling compositor can resize the window below its minimum width.
     readonly property int editorWidth: Math.min(
         Math.round(writerFontMetrics.averageCharacterWidth * 65),
-        Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)))
+        Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)),
+        Math.max(0, width - 48))
     property bool closeConfirmed: false
     property bool searchOpen: false
     property bool searchUpdating: false
@@ -124,28 +128,30 @@ ApplicationWindow {
         });
     }
 
-    function updateSearch() {
-        var matches = [];
-        var query = searchField.text;
-        if (query.length > 0) {
-            var haystack = editor.text.toLocaleLowerCase();
-            var needle = query.toLocaleLowerCase();
-            var position = 0;
-            while ((position = haystack.indexOf(needle, position)) !== -1) {
-                matches.push(position);
-                position += Math.max(1, needle.length);
-            }
-        }
-        searchMatches = matches;
-        searchMatchIndex = matches.length > 0 ? 0 : -1;
-        showSearchMatch();
+    // Only the search field and the next and previous controls select a
+    // match. When the document changes underneath, the matches follow along
+    // without taking the writer's caret.
+    function updateSearch(selectMatch) {
+        var previous = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : 0;
+        searchMatches = backend.searchMatches(searchField.text);
+        searchMatchIndex = selectMatch ? (searchMatches.length > 0 ? 0 : -1)
+                                       : matchAtOrAfter(previous);
+        showSearchMatch(selectMatch);
     }
 
-    function showSearchMatch() {
+    function matchAtOrAfter(position) {
+        for (var i = 0; i < searchMatches.length; ++i) {
+            if (searchMatches[i] >= position)
+                return i;
+        }
+        return searchMatches.length > 0 ? 0 : -1;
+    }
+
+    function showSearchMatch(selectMatch) {
         var start = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : -1;
         searchUpdating = true;
         backend.setSearchHighlight(searchField.text, start);
-        if (start >= 0) {
+        if (selectMatch && start >= 0) {
             editor.select(start, start + searchField.text.length);
             editorFlick.ensureCursorVisible();
         }
@@ -157,7 +163,7 @@ ApplicationWindow {
             return;
         searchMatchIndex = (searchMatchIndex + direction + searchMatches.length)
                            % searchMatches.length;
-        showSearchMatch();
+        showSearchMatch(true);
     }
 
     function closeSearch() {
@@ -172,13 +178,11 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+S"
-        context: Qt.ApplicationShortcut
         onActivated: backend.save()
     }
 
     Shortcut {
         sequence: "Ctrl+H"
-        context: Qt.ApplicationShortcut
         onActivated: {
             if (previewActive)
                 togglePreview();
@@ -190,35 +194,24 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequences: ["Ctrl++", "Ctrl+="]
-        context: Qt.ApplicationShortcut
-        onActivated: backend.editorFontSize += 2
-    }
-
-    Shortcut {
-        sequence: "Ctrl+-"
-        context: Qt.ApplicationShortcut
-        onActivated: backend.editorFontSize -= 2
-    }
-
-    Shortcut {
-        sequence: "Ctrl+0"
-        context: Qt.ApplicationShortcut
-        onActivated: backend.resetEditorFontSize()
-    }
-
-    Shortcut {
         sequence: "Ctrl+B"
         context: Qt.WindowShortcut
         enabled: !win.previewActive
-        onActivated: editor.wrapSelection("**", "**")
+        onActivated: editor.wrapSelection("**")
     }
 
     Shortcut {
         sequence: "Ctrl+I"
         context: Qt.WindowShortcut
         enabled: !win.previewActive
-        onActivated: editor.wrapSelection("*", "*")
+        onActivated: editor.wrapSelection("*")
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+X"
+        context: Qt.WindowShortcut
+        enabled: !win.previewActive
+        onActivated: editor.wrapSelection("~~")
     }
 
     Shortcut {
@@ -230,25 +223,38 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+?"
-        context: Qt.ApplicationShortcut
         onActivated: shortcutsDialog.open()
     }
 
     Shortcut {
+        // Ctrl++ is a different shortcut to Qt, not a shifted Ctrl+=, and it is
+        // the only one a layout that puts + on its own key can reach.
+        sequences: ["Ctrl+=", "Ctrl++"]
+        onActivated: backend.increaseTextSize()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+-"
+        onActivated: backend.decreaseTextSize()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+0"
+        onActivated: backend.resetTextSize()
+    }
+
+    Shortcut {
         sequence: "Ctrl+O"
-        context: Qt.ApplicationShortcut
         onActivated: backend.openDialog()
     }
 
     Shortcut {
         sequence: "Ctrl+N"
-        context: Qt.ApplicationShortcut
         onActivated: backend.newWindow()
     }
 
     Shortcut {
         sequence: "Ctrl+Shift+S"
-        context: Qt.ApplicationShortcut
         onActivated: backend.saveAsDialog()
     }
 
@@ -260,13 +266,16 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+P"
-        context: Qt.ApplicationShortcut
         onActivated: backend.printDocument()
     }
 
     Shortcut {
+        sequence: "Ctrl+Shift+C"
+        onActivated: backend.copyAsHtml()
+    }
+
+    Shortcut {
         sequences: ["Meta+F", "F11"]
-        context: Qt.ApplicationShortcut
         onActivated: toggleFullScreen()
     }
 
@@ -286,7 +295,6 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+F"
-        context: Qt.ApplicationShortcut
         onActivated: {
             if (previewActive)
                 togglePreview();
@@ -298,7 +306,6 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+G"
-        context: Qt.ApplicationShortcut
         enabled: win.searchOpen
         onActivated: win.moveSearch(1)
     }
@@ -315,15 +322,20 @@ ApplicationWindow {
             saveFileDialog.open();
         }
 
-        function onCloseAfterSave() {
-            win.closeConfirmed = true;
-            win.close();
+        function onSaveSucceeded() {
+            // Only a save the writer chose in the prompt carries out the
+            // pending close or open, never an auto-save that lands meanwhile.
+            const confirmed = win.awaitingPendingSave;
+            win.awaitingPendingSave = false;
+            if (confirmed && win.pendingAction !== "")
+                win.completePendingAction();
         }
 
-        function onSaveSucceeded() {
+        function onSaveFailed() {
+            // A failed save leaves the document as it was, so the close or
+            // open it was for is off; a later save must not carry it out.
             win.awaitingPendingSave = false;
-            if (win.pendingAction !== "")
-                win.completePendingAction();
+            win.pendingAction = "";
         }
 
         function onExternalChangeDetected(deleted, locallyModified) {
@@ -348,7 +360,6 @@ ApplicationWindow {
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
         onAccepted: backend.saveAs(selectedFile)
         onRejected: {
-            backend.fileDialogCanceled();
             win.awaitingPendingSave = false;
             win.pendingAction = "";
         }
@@ -356,14 +367,20 @@ ApplicationWindow {
 
     UnsavedChangesDialog {
         id: unsavedChangesDialog
+        objectName: "unsavedChangesDialog"
         fileName: backend.fileName
         darkMode: win.darkMode
         textScale: win.textScale
         textColor: win.textColor
-        strongTextColor: win.strongTextColor
+        strongTextColor: win.textColor
         activeButtonColor: backend.themeAccent
         containerWidth: win.width
         containerHeight: win.height
+
+        // Discard must still mean discard, so nothing is auto-saved while
+        // the writer decides.
+        onAboutToShow: backend.holdAutoSave(true)
+        onClosed: backend.holdAutoSave(false)
 
         onDiscardRequested: {
             backend.discardRecovery();
@@ -382,7 +399,8 @@ ApplicationWindow {
         darkMode: win.darkMode
         textScale: win.textScale
         textColor: win.textColor
-        strongTextColor: win.strongTextColor
+        strongTextColor: win.textColor
+        activeButtonColor: backend.themeAccent
         containerWidth: win.width
         containerHeight: win.height
 
@@ -392,12 +410,16 @@ ApplicationWindow {
 
     Dialog {
         id: shortcutsDialog
+        objectName: "shortcutsDialog"
         modal: true
         title: "Keyboard shortcuts"
         standardButtons: Dialog.Close
         anchors.centerIn: parent
-        contentItem: Label {
-            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl++ / Ctrl+=  Increase text size\nCtrl+-  Decrease text size\nCtrl+0  Reset text size\nCtrl+Shift+M  Toggle Preview\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
+        // A bare Label as contentItem trips a Popup implicitWidth binding loop
+        // (Material Dialog.qml:14); as a child, the default content item sizes
+        // to it without the feedback.
+        Label {
+            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+Shift+X  Strikethrough\nCtrl+K  Link\nCtrl+Shift+C  Copy as HTML\nCtrl+Shift+M  Toggle Preview\nCtrl+P  Print\nCtrl+= / Ctrl+-  Text Size\nCtrl+0  Reset Text Size\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
             lineHeight: 1.5
         }
     }
@@ -407,7 +429,7 @@ ApplicationWindow {
 
         Flickable {
             id: editorFlick
-            objectName: "editorFlick"
+            objectName: "editorScroll"
             readonly property var activeTextItem: win.previewActive ? renderedPreview : editor
             anchors.fill: parent
             anchors.leftMargin: 24
@@ -434,8 +456,12 @@ ApplicationWindow {
                 active: hovered || pressed || scrollLinger.running
             }
 
+            // Also lingers after paging through the document from the
+            // keyboard, so the bar shows where the jump landed. Writing past
+            // the bottom edge scrolls too, but leaves the bar hidden.
             Timer {
                 id: scrollLinger
+                objectName: "scrollLinger"
                 interval: 600
             }
 
@@ -605,6 +631,12 @@ ApplicationWindow {
                 // finger scrolling carries pixel-precise pixelDelta.
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: function(wheel) {
+                    if (wheel.modifiers & Qt.ControlModifier) {
+                        editorFlick.zoomByWheel(wheel);
+                        wheel.accepted = true;
+                        return;
+                    }
+
                     scrollLinger.restart();
                     if (wheel.pixelDelta.y !== 0 || wheel.phase === Qt.ScrollMomentum
                             || wheel.phase === Qt.ScrollEnd)
@@ -704,6 +736,32 @@ ApplicationWindow {
                 wheelScroll.stop();
                 stopTouchpadScrolling();
             }
+            onContentYChanged: editor.hoveredLinkUrl = ""
+
+            // Ctrl+wheel changes the text size, as it does in a browser. A
+            // wheel notch is a whole step, but a touchpad trickles in pixels,
+            // so bank the fractions and step once a whole one is scrolled.
+            property real zoomNotches: 0
+
+            function zoomByWheel(wheel) {
+                // Finger scrolling synthesizes an angleDelta too, so pixelDelta
+                // is the one to test first, as in onWheel.
+                var notches = wheel.pixelDelta.y !== 0
+                    ? wheel.pixelDelta.y / 50
+                    : wheel.angleDelta.y / 120;
+                if (zoomNotches * notches < 0)
+                    zoomNotches = 0;
+
+                zoomNotches += notches;
+                while (zoomNotches >= 1) {
+                    backend.increaseTextSize();
+                    zoomNotches -= 1;
+                }
+                while (zoomNotches <= -1) {
+                    backend.decreaseTextSize();
+                    zoomNotches += 1;
+                }
+            }
 
             function scrollByWheel(wheel) {
                 stopTouchpadScrolling();
@@ -789,7 +847,7 @@ ApplicationWindow {
                 persistentSelection: true
                 activeFocusOnPress: true
                 color: win.textColor
-                selectedTextColor: win.strongTextColor
+                selectedTextColor: win.selectionTextColor
                 selectionColor: win.selectionFill
                 font.family: backend.editorFont
                 font.pixelSize: win.editorFontPixelSize
@@ -802,7 +860,7 @@ ApplicationWindow {
                 renderType: Screen.devicePixelRatio % 1 === 0 ? TextEdit.NativeRendering : TextEdit.QtRendering
                 cursorDelegate: Rectangle {
                     width: 1
-                    color: win.strongTextColor
+                    color: win.textColor
                 }
                 onCursorRectangleChanged: {
                     if (!win.previewActive)
@@ -810,38 +868,36 @@ ApplicationWindow {
                 }
                 onFontChanged: backend.documentFontChanged()
 
-                function replaceSelectionWith(replacement) {
-                    var start = Math.min(selectionStart, selectionEnd);
-                    var end = Math.max(selectionStart, selectionEnd);
-                    EditorMutations.replaceRange(editor, start, end, replacement);
+                // One edit command, so a single undo takes the change back.
+                function replaceText(start, end, replacement) {
+                    backend.replaceRange(start, end, replacement);
                 }
 
-                function wrapSelection(before, after) {
+                function replaceSelectionWith(replacement) {
+                    EditorMutations.replaceRange(editor, selectionStart, selectionEnd, replacement);
+                }
+
+                function wrapSelection(marker) {
                     forceActiveFocus();
-                    var start = Math.min(selectionStart, selectionEnd);
-                    var end = Math.max(selectionStart, selectionEnd);
-                    var selected = text.slice(start, end);
-                    EditorMutations.replaceRange(editor, start, end,
-                                                 before + selected + after,
-                                                 before.length,
-                                                 before.length + selected.length);
+                    EditorMutations.toggleWrap(editor, marker,
+                                               backend.emphasisSpanAt(cursorPosition, marker));
                 }
 
                 function insertLink() {
-                    var start = Math.min(selectionStart, selectionEnd);
-                    var end = Math.max(selectionStart, selectionEnd);
+                    forceActiveFocus();
+                    var start = selectionStart;
+                    var end = selectionEnd;
                     var selected = text.slice(start, end);
                     var url = backend.clipboardUrl();
                     var label = selected.length > 0 ? selected : "link text";
-                    var destination = url.length > 0 ? url : "https://";
-                    var escapedLabel = escapeMarkdownLinkText(label);
-                    var markdown = "[" + escapedLabel + "](" + escapeMarkdownLinkDestination(destination) + ")";
+                    var markdown = markdownLink(label, url.length > 0 ? url : "https://");
+                    var labelLength = escapeMarkdownLinkText(label).length;
                     if (selected.length === 0) {
                         EditorMutations.replaceRange(editor, start, end, markdown,
-                                                     1, 1 + escapedLabel.length);
+                                                     1, 1 + labelLength);
                     } else if (url.length === 0) {
                         EditorMutations.replaceRange(editor, start, end, markdown,
-                                                     escapedLabel.length + 3,
+                                                     labelLength + 3,
                                                      markdown.length - 1);
                     } else {
                         EditorMutations.replaceRange(editor, start, end, markdown);
@@ -855,9 +911,7 @@ ApplicationWindow {
                     }
                     var lineStart = text.lastIndexOf("\n", cursorPosition - 1) + 1;
                     var line = text.slice(lineStart, cursorPosition);
-                    var before = text.slice(0, cursorPosition);
-                    var fences = (before.match(/^\s*```/gm) || []).length;
-                    if ((fences % 2) === 1) {
+                    if (backend.insideFence(cursorPosition)) {
                         replaceSelectionWith("\n");
                         return;
                     }
@@ -872,6 +926,22 @@ ApplicationWindow {
                                 marker = (parseInt(marker) + 1) + marker.slice(-1);
                             replaceSelectionWith("\n" + match[1] + marker + " ");
                         }
+                        return;
+                    }
+                    // A new paragraph stands apart from the one above it by a
+                    // blank line, which is the second break here. A line that
+                    // is already blank has nothing to stand apart from, so
+                    // that break would only be a gap nobody asked for.
+                    // The break lands on what the selection leaves behind, which
+                    // is not the caret's line when it was dragged right to left.
+                    var start = selectionStart;
+                    var end = selectionEnd;
+                    var head = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);
+                    var lineEnd = text.indexOf("\n", end);
+                    var rest = lineEnd < 0 ? text.slice(end)
+                                           : text.slice(end, lineEnd);
+                    if (/^\s*$/.test(head) && /^\s*$/.test(rest)) {
+                        replaceSelectionWith("\n");
                         return;
                     }
                     replaceSelectionWith("\n\n");
@@ -889,9 +959,14 @@ ApplicationWindow {
                                   .replace(/\)/g, "\\)");
                 }
 
+                function markdownLink(label, url) {
+                    return "[" + escapeMarkdownLinkText(label) + "]("
+                        + escapeMarkdownLinkDestination(url) + ")";
+                }
+
                 function pasteClipboardUrlAsMarkdownLink() {
-                    var start = Math.min(selectionStart, selectionEnd);
-                    var end = Math.max(selectionStart, selectionEnd);
+                    var start = selectionStart;
+                    var end = selectionEnd;
                     if (start === end)
                         return false;
 
@@ -907,8 +982,7 @@ ApplicationWindow {
                     if (linkText === "")
                         return false;
 
-                    replaceSelectionWith(leading + "[" + escapeMarkdownLinkText(linkText) + "]("
-                                         + escapeMarkdownLinkDestination(url) + ")" + trailing);
+                    replaceSelectionWith(leading + markdownLink(linkText, url) + trailing);
                     return true;
                 }
 
@@ -944,13 +1018,12 @@ ApplicationWindow {
 
                 function moveCursorVisibly(direction) {
                     if (selectionStart !== selectionEnd) {
-                        cursorPosition = direction > 0
-                            ? Math.max(selectionStart, selectionEnd)
-                            : Math.min(selectionStart, selectionEnd);
+                        cursorPosition = direction > 0 ? selectionEnd : selectionStart;
                         return;
                     }
 
-                    var pos = Math.max(0, Math.min(text.length, cursorPosition + direction));
+                    var pos = backend.cursorPositionStep(cursorPosition, direction);
+                    pos = Math.max(0, Math.min(text.length, pos));
                     cursorPosition = direction > 0
                         ? skipHiddenForward(pos)
                         : skipHiddenBackward(pos);
@@ -976,6 +1049,39 @@ ApplicationWindow {
                         return false;
 
                     var start = cursorPosition - 2;
+                    var lineEnd = text.indexOf("\n", cursorPosition);
+                    var line = lineEnd < 0 ? text.slice(cursorPosition)
+                                           : text.slice(cursorPosition, lineEnd);
+                    // Something on the caret's line and the pair above it is a
+                    // paragraph break and nothing else, either the one Return
+                    // wrote to end a paragraph or the one the writer is now
+                    // closing to join what it separates. Both breaks go.
+                    if (/^\s*$/.test(line)) {
+                        // On a blank line Return writes a single break, so up
+                        // here the pair may be that break and one that was
+                        // already in the document. Above a blank line Return
+                        // writes a single break too, and so wrote neither of
+                        // these.
+                        var above = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);
+                        if (/^\s*$/.test(above))
+                            return false;
+                        // Past that the two Returns leave the same text and the
+                        // same caret, and no reading of either says which was
+                        // pressed. What decides instead is that the gap is left
+                        // standing: both breaks go only while a blank line of
+                        // it survives them. The end of the document below the
+                        // caret leaves it none...
+                        if (lineEnd < 0)
+                            return false;
+                        // ...and so does the next paragraph, which the pair
+                        // would otherwise be pulled up against.
+                        var belowEnd = text.indexOf("\n", lineEnd + 1);
+                        var below = belowEnd < 0 ? text.slice(lineEnd + 1)
+                                                 : text.slice(lineEnd + 1, belowEnd);
+                        if (!/^\s*$/.test(below))
+                            return false;
+                    }
+
                     remove(start, cursorPosition);
                     cursorPosition = start;
                     return true;
@@ -995,6 +1101,12 @@ ApplicationWindow {
                         event.accepted = true;
                         return;
                     }
+
+                    var pageKey = event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp;
+                    var documentEdgeKey = (event.key === Qt.Key_Home || event.key === Qt.Key_End)
+                        && (event.modifiers & Qt.ControlModifier);
+                    if (pageKey || documentEdgeKey)
+                        scrollLinger.restart();
 
                     var returnKey = event.key === Qt.Key_Return || event.key === Qt.Key_Enter;
                     var commandModifier = event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
@@ -1021,11 +1133,12 @@ ApplicationWindow {
                 }
 
                 onTextChanged: {
+                    hoveredLinkUrl = "";
                     if (win.searchUpdating)
                         return;
                     var contentChanged = backend.editorTextChanged();
                     if (win.searchOpen && contentChanged)
-                        win.updateSearch();
+                        win.updateSearch(false);
                 }
 
                 Text {
@@ -1037,6 +1150,60 @@ ApplicationWindow {
                     font.family: editor.font.family
                     font.pixelSize: editor.font.pixelSize
                     font.weight: editor.font.weight
+                }
+
+                property string hoveredLinkUrl: ""
+                property real linkHoverX: 0
+                property real linkHoverY: 0
+
+                // positionAt() snaps to the nearest caret, even past the end of a
+                // line, so only count a character the pointer is inside: the one
+                // on either side of that caret, whichever way the text runs.
+                function linkUrlUnder(x, y) {
+                    var caret = positionAt(x, y);
+                    for (var position = Math.max(0, caret - 1);
+                         position <= caret && position < length; ++position) {
+                        var box = positionToRectangle(position);
+                        var next = positionToRectangle(position + 1);
+                        // A hidden marker has no width; only a line's last
+                        // character needs an estimate.
+                        var edge = next.y === box.y
+                            ? next.x : box.x + writerFontMetrics.averageCharacterWidth;
+                        if (y >= box.y && y < box.y + box.height
+                                && x >= Math.min(box.x, edge) && x < Math.max(box.x, edge))
+                            return backend.linkUrlAt(position);
+                    }
+                    return "";
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    hoverEnabled: true
+                    cursorShape: Qt.IBeamCursor
+                    onPositionChanged: (mouse) => {
+                        editor.linkHoverX = mouse.x;
+                        editor.linkHoverY = mouse.y;
+                        editor.hoveredLinkUrl = editor.linkUrlUnder(mouse.x, mouse.y);
+                    }
+                    onExited: editor.hoveredLinkUrl = ""
+                }
+
+                ToolTip {
+                    visible: editor.hoveredLinkUrl.length > 0
+                    x: editor.linkHoverX + 12
+                    y: editor.linkHoverY + 20
+                    contentItem: Label {
+                        objectName: "linkTooltipText"
+                        // A destination is document text; AutoText would render
+                        // one that looks like HTML instead of showing it.
+                        textFormat: Text.PlainText
+                        text: editor.hoveredLinkUrl
+                        font.family: backend.editorFont
+                        font.pixelSize: win.scaledSize(12)
+                        elide: Text.ElideMiddle
+                    }
+                    width: Math.min(implicitWidth, win.width - 32)
                 }
 
                 Component.onCompleted: {
@@ -1063,7 +1230,7 @@ ApplicationWindow {
                 selectByMouse: true
                 color: win.textColor
                 selectionColor: win.selectionFill
-                selectedTextColor: win.strongTextColor
+                selectedTextColor: win.selectionTextColor
                 font.family: backend.editorFont
                 font.pixelSize: win.editorFontPixelSize
                 renderType: editor.renderType
@@ -1139,8 +1306,11 @@ ApplicationWindow {
         FontPicker {
             id: fontPicker
             objectName: "fontPicker"
-            x: footerStatus.x + fontButton.x - 8
-            y: footerStatus.y - height - 10
+            // Parented to its button, so a press on the button is not a press
+            // outside that closes it only for the click to open it again.
+            parent: fontButton
+            x: -8
+            y: -height - 10
             width: win.scaledSize(320)
             maximumHeight: Math.min(win.scaledSize(440), win.height - 80)
             fonts: backend.availableFonts
@@ -1183,6 +1353,11 @@ ApplicationWindow {
             topPadding: 0
             bottomPadding: 0
             Material.elevation: 8
+            // Reaches here from either field or the buttons beside them.
+            Keys.onEscapePressed: function(event) {
+                win.closeSearch();
+                event.accepted = true;
+            }
 
             background: Rectangle {
                 radius: 9
@@ -1199,39 +1374,41 @@ ApplicationWindow {
 
                     TextInput {
                         id: searchField
+                        objectName: "searchField"
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
                         height: win.replaceOpen ? parent.height / 2 : parent.height
                         verticalAlignment: TextInput.AlignVCenter
                         selectByMouse: true
+                        activeFocusOnTab: true
                         color: win.textColor
                         selectionColor: win.selectionFill
-                        selectedTextColor: win.strongTextColor
+                        selectedTextColor: win.selectionTextColor
                         font.pixelSize: win.scaledSize(17)
                         clip: true
-                        onTextChanged: win.updateSearch()
+                        onTextChanged: win.updateSearch(true)
                         Keys.onReturnPressed: function(event) {
                             win.moveSearch((event.modifiers & Qt.ShiftModifier) ? -1 : 1);
-                            event.accepted = true;
-                        }
-                        Keys.onEscapePressed: function(event) {
-                            win.closeSearch();
                             event.accepted = true;
                         }
                     }
 
                     TextInput {
                         id: replaceField
+                        objectName: "replaceField"
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         height: parent.height / 2
                         visible: win.replaceOpen
                         verticalAlignment: TextInput.AlignVCenter
+                        selectByMouse: true
+                        activeFocusOnTab: true
+                        clip: true
                         color: win.textColor
                         selectionColor: win.selectionFill
-                        selectedTextColor: win.strongTextColor
+                        selectedTextColor: win.selectionTextColor
                         font.pixelSize: win.scaledSize(17)
                         Keys.onReturnPressed: replaceCurrentButton.clicked()
                     }
@@ -1267,30 +1444,43 @@ ApplicationWindow {
 
                 Button {
                     id: replaceCurrentButton
+                    objectName: "replaceButton"
                     visible: win.replaceOpen
                     text: "Replace"
                     onClicked: {
                         if (win.searchMatchIndex < 0) return;
                         var start = win.searchMatches[win.searchMatchIndex];
+                        var replacement = replaceField.text;
                         EditorMutations.replaceRange(editor, start,
                                                      start + searchField.text.length,
-                                                     replaceField.text);
-                        win.updateSearch();
+                                                     replacement);
+                        // Carry on past what was just written, so a replacement
+                        // the query also matches is not found again.
+                        win.searchMatches = backend.searchMatches(searchField.text);
+                        win.searchMatchIndex = win.matchAtOrAfter(start + replacement.length);
+                        win.showSearchMatch(true);
                     }
                 }
 
                 Button {
+                    objectName: "replaceAllButton"
                     visible: win.replaceOpen
                     text: "All"
                     onClicked: {
-                        if (searchField.text.length === 0) return;
-                        for (var i = win.searchMatches.length - 1; i >= 0; --i) {
-                            var start = win.searchMatches[i];
-                            EditorMutations.replaceRange(editor, start,
-                                                         start + searchField.text.length,
-                                                         replaceField.text);
+                        var query = searchField.text;
+                        var matches = win.searchMatches;
+                        if (query.length === 0 || matches.length === 0) return;
+                        // One replacement over the span of every match, so a
+                        // single undo takes them all back.
+                        var first = matches[0];
+                        var replaced = "";
+                        var position = first;
+                        for (var i = 0; i < matches.length; ++i) {
+                            replaced += editor.text.slice(position, matches[i]) + replaceField.text;
+                            position = matches[i] + query.length;
                         }
-                        win.updateSearch();
+                        EditorMutations.replaceRange(editor, first, position, replaced);
+                        win.updateSearch(false);
                     }
                 }
 

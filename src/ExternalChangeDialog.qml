@@ -13,6 +13,9 @@ Dialog {
     property int containerWidth: 520
     property int containerHeight: 320
     property real textScale: 1
+    // Closing without a choice, as with Escape, keeps the writer's text: it
+    // decides nothing destructive and leaves auto-save able to resume.
+    property bool decided: false
 
     signal keepRequested()
     signal reloadRequested()
@@ -25,7 +28,12 @@ Dialog {
     y: Math.round((containerHeight - height) / 2)
     padding: 20
 
+    onAboutToShow: decided = false
     onOpened: (deleted ? keepButton : reloadButton).forceActiveFocus()
+    onClosed: {
+        if (!decided)
+            keepRequested();
+    }
 
     background: Rectangle {
         color: root.darkMode ? "#1a1a1a" : "#ffffff"
@@ -81,6 +89,7 @@ Dialog {
                 KeyNavigation.tab: reloadButton
                 KeyNavigation.backtab: reloadButton
                 onClicked: {
+                    root.decided = true;
                     root.close();
                     root.keepRequested();
                 }
@@ -99,6 +108,7 @@ Dialog {
                 KeyNavigation.tab: keepButton
                 KeyNavigation.backtab: keepButton
                 onClicked: {
+                    root.decided = true;
                     root.close();
                     root.reloadRequested();
                 }
