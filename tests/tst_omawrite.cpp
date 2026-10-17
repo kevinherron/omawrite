@@ -3,8 +3,13 @@
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
-#include <QQuickWindow>
 #include <QQuickStyle>
+#include <QQuickTextDocument>
+#include <QQuickWindow>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextTable>
 #include <QWheelEvent>
 
 #include "backend.h"
@@ -220,8 +225,8 @@ private slots:
         QVERIFY2(window, qPrintable(component.errorString()));
 
         QVERIFY(window->findChild<QObject *>(QStringLiteral("sourceEditor")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("renderedPreview")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("modeToggle")));
+        QVERIFY(window->findChild<QObject *>(QStringLiteral("renderedPreview")));
+        QVERIFY(window->findChild<QObject *>(QStringLiteral("previewButton")));
 
         QObject *saveButton = window->findChild<QObject *>(QStringLiteral("saveButton"));
         QObject *openButton = window->findChild<QObject *>(QStringLiteral("openButton"));
@@ -235,6 +240,163 @@ private slots:
         QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
         QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
         QCOMPARE(openDialogSpy.count(), 1);
+    }
+
+    void previewsMarkdownWithoutChangingTheSource() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("preview.md"));
+        const QString markdown = QStringLiteral(
+            "# Title\n\nA **bold** and *italic* paragraph.\n\n"
+            "- first\n- second\n\n> quoted\n\n"
+            "```cpp\nint value = 42;\n```\n\n"
+            "| Name | Value |\n| --- | --- |\n| item | 42 |\n");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(markdown.toUtf8()), markdown.toUtf8().size());
+        file.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *quickWindow = qobject_cast<QQuickWindow *>(window.data());
+        QVERIFY(quickWindow);
+        QVERIFY(QTest::qWaitForWindowExposed(quickWindow));
+        quickWindow->requestActivate();
+        QTRY_VERIFY(quickWindow->isActive());
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QObject *preview = window->findChild<QObject *>(QStringLiteral("renderedPreview"));
+        QObject *previewButton = window->findChild<QObject *>(QStringLiteral("previewButton"));
+        QVERIFY(editor);
+        QVERIFY(preview);
+        QVERIFY(previewButton);
+        QVERIFY(!window->property("previewActive").toBool());
+        QVERIFY(!preview->property("visible").toBool());
+
+        backend.open(QUrl::fromLocalFile(path));
+        QCOMPARE(editor->property("text").toString(), markdown);
+        QVERIFY(!backend.modified());
+        QSignalSpy modifiedSpy(&backend, &Backend::modifiedChanged);
+
+        QTest::keyClick(quickWindow, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_VERIFY(window->property("previewActive").toBool());
+        QVERIFY(preview->property("visible").toBool());
+        QVERIFY(preview->property("readOnly").toBool());
+        QVERIFY(preview->property("activeFocus").toBool());
+        QVERIFY(!editor->property("visible").toBool());
+        QCOMPARE(preview->property("baseUrl").toUrl(), QUrl::fromLocalFile(path));
+        QCOMPARE(modifiedSpy.count(), 0);
+        QCOMPARE(editor->property("text").toString(), markdown);
+
+        auto *quickDocument = preview->property("textDocument").value<QQuickTextDocument *>();
+        QVERIFY(quickDocument);
+        QTextDocument *rendered = quickDocument->textDocument();
+        QCOMPARE(rendered->firstBlock().text(), QStringLiteral("Title"));
+        QCOMPARE(rendered->firstBlock().blockFormat().headingLevel(), 1);
+        QTextCursor bold = rendered->find(QStringLiteral("bold"));
+        QVERIFY(!bold.isNull());
+        QCOMPARE(bold.charFormat().fontWeight(), QFont::Bold);
+        QVERIFY(rendered->find(QStringLiteral("italic")).charFormat().fontItalic());
+        QVERIFY(rendered->find(QStringLiteral("first")).block().textList());
+        QVERIFY(rendered->toPlainText().contains(QStringLiteral("int value = 42;")));
+        bool hasTable = false;
+        for (QTextFrame *frame : rendered->rootFrame()->childFrames())
+            hasTable |= qobject_cast<QTextTable *>(frame) != nullptr;
+        QVERIFY(hasTable);
+
+        // Preview must not allow editing shortcuts to mutate the hidden editor.
+        QTest::keyClick(quickWindow, Qt::Key_X);
+        QTest::keyClick(quickWindow, Qt::Key_B, Qt::ControlModifier);
+        QTest::keyClick(quickWindow, Qt::Key_I, Qt::ControlModifier);
+        QTest::keyClick(quickWindow, Qt::Key_K, Qt::ControlModifier);
+        QTest::keyClick(quickWindow, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(editor->property("text").toString(), markdown);
+        QCOMPARE(modifiedSpy.count(), 0);
+
+        // Saving in preview still writes the original Markdown.
+        backend.save();
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), markdown.toUtf8());
+        file.close();
+
+        QTest::keyClick(quickWindow, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_VERIFY(!window->property("previewActive").toBool());
+        QVERIFY(editor->property("activeFocus").toBool());
+        QVERIFY(QMetaObject::invokeMethod(editor, "insert",
+                                         Q_ARG(int, markdown.size()),
+                                         Q_ARG(QString, QStringLiteral("last edit"))));
+        QVERIFY(editor->property("canUndo").toBool());
+        QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 2), Q_ARG(int, 7)));
+        const QString edited = editor->property("text").toString();
+        modifiedSpy.clear();
+
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QVERIFY(window->property("previewActive").toBool());
+        QVERIFY(rendered->toPlainText().contains(QStringLiteral("last edit")));
+        QTest::keyClick(quickWindow, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(editor->property("text").toString(), edited);
+        QTest::keyClick(quickWindow, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("previewActive").toBool());
+        QCOMPARE(editor->property("text").toString(), edited);
+        QCOMPARE(editor->property("selectionStart").toInt(), 2);
+        QCOMPARE(editor->property("selectionEnd").toInt(), 7);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 7);
+        QCOMPARE(modifiedSpy.count(), 0);
+        QTest::keyClick(quickWindow, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(editor->property("text").toString(), markdown);
+
+        // Find returns to the source and keeps focus in the search field.
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QTest::keyClick(quickWindow, Qt::Key_F, Qt::ControlModifier);
+        QTRY_VERIFY(!window->property("previewActive").toBool());
+        QVERIFY(window->property("searchOpen").toBool());
+        QTRY_VERIFY(quickWindow->activeFocusItem() != editor);
+
+        // Each mode keeps its own scroll position across repeated toggles.
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "closeSearch"));
+        QVERIFY(editor->setProperty("text", QStringLiteral("Paragraph **bold** text.\n\n")
+                                              .repeated(100)));
+        QObject *flick = window->findChild<QObject *>(QStringLiteral("editorFlick"));
+        QVERIFY(flick);
+        QVERIFY(flick->setProperty("contentY", 600.0));
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QTRY_COMPARE(flick->property("contentY").toReal(), 0.0);
+        QVERIFY(flick->setProperty("contentY", 300.0));
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QTRY_COMPARE(flick->property("contentY").toReal(), 600.0);
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QTRY_COMPARE(flick->property("contentY").toReal(), 300.0);
+
+        backend.setTextScale(16.0 / 12.0);
+        QCOMPARE(preview->property("font").value<QFont>().pixelSize(), 27);
+        QTest::keyClick(quickWindow, Qt::Key_Equal, Qt::ControlModifier);
+        QCOMPARE(preview->property("font").value<QFont>().pixelSize(), 29);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 29);
+        QTest::keyClick(quickWindow, Qt::Key_Minus, Qt::ControlModifier);
+        QCOMPARE(preview->property("font").value<QFont>().pixelSize(), 27);
+        QTest::keyClick(quickWindow, Qt::Key_Equal, Qt::ControlModifier);
+        QTest::keyClick(quickWindow, Qt::Key_0, Qt::ControlModifier);
+        QCOMPARE(preview->property("font").value<QFont>().pixelSize(), 27);
+
+        // Switching modes cancels a touchpad gesture and its pending momentum.
+        const QPointF position(quickWindow->width() / 2.0, quickWindow->height() / 2.0);
+        sendTouchpadWheel(quickWindow, position, -8, -120, Qt::ScrollBegin);
+        QTest::qWait(20);
+        sendTouchpadWheel(quickWindow, position, -10, -120, Qt::ScrollUpdate);
+        QVERIFY(flick->property("touchpadGestureActive").toBool());
+        QVERIFY(QMetaObject::invokeMethod(previewButton, "clicked"));
+        QTRY_COMPARE(flick->property("contentY").toReal(), 600.0);
+        QVERIFY(!flick->property("touchpadGestureActive").toBool());
+        QTest::qWait(120);
+        QCOMPARE(flick->property("contentY").toReal(), 600.0);
+        backend.discardRecovery();
     }
 
     void scalesTextWithDesktopTextSize() {
@@ -261,6 +423,83 @@ private slots:
         backend.setTextScale(9.0 / 12.0);
         QCOMPARE(window->property("editorFontPixelSize").toInt(), 15);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 15);
+    }
+
+    void centersWidePreviewContentAcrossZoomLevels() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QObject *preview = window->findChild<QObject *>(QStringLiteral("renderedPreview"));
+        QObject *flick = window->findChild<QObject *>(QStringLiteral("editorFlick"));
+        QVERIFY(editor);
+        QVERIFY(preview);
+        QVERIFY(flick);
+        const QString codeLine = QStringLiteral("    configuration-ref.md    # ")
+            + QStringLiteral("LongConfigurationReference ").repeated(4);
+        const QString markdown = QStringLiteral("# Heading\n\n```text\n") + codeLine
+            + QStringLiteral("\n```\n\n") + QStringLiteral("A paragraph of text. ").repeated(30);
+        QVERIFY(editor->setProperty("text", markdown));
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "togglePreview"));
+
+        for (int windowWidth : {720, 1280, 1920}) {
+            QVERIFY(window->setProperty("width", windowWidth));
+            for (qreal textScale : {1.0, 16.0 / 12.0}) {
+                backend.setTextScale(textScale);
+                for (int fontSize : {10, 20, 30, 48}) {
+                    backend.setEditorFontSize(fontSize);
+                    const qreal viewportWidth = flick->property("width").toReal();
+                    QTRY_VERIFY(preview->property("contentWidth").toReal() > 0);
+                    const qreal renderedWidth = qMax(preview->property("width").toReal(),
+                                                    preview->property("contentWidth").toReal());
+                    if (renderedWidth <= viewportWidth) {
+                        QTRY_VERIFY(qAbs(preview->property("x").toReal() * 2
+                                         + renderedWidth - viewportWidth) <= 1.0);
+                    } else {
+                        QTRY_COMPARE(preview->property("x").toReal(), 0.0);
+                        QVERIFY(flick->property("contentWidth").toReal() >= renderedWidth);
+                    }
+                    QCOMPARE(editor->property("text").toString(), markdown);
+                }
+            }
+        }
+
+        // A wide line remains intact and can be scrolled into view.
+        auto *quickDocument = preview->property("textDocument").value<QQuickTextDocument *>();
+        QVERIFY(quickDocument);
+        QVERIFY(quickDocument->textDocument()->toPlainText().contains(codeLine));
+        auto *quickWindow = qobject_cast<QQuickWindow *>(window.data());
+        QVERIFY(quickWindow);
+        QVERIFY(QTest::qWaitForWindowExposed(quickWindow));
+        QVERIFY(flick->setProperty("contentX", 100.0));
+        const QPointF position(quickWindow->width() / 2.0, quickWindow->height() / 2.0);
+        QWheelEvent horizontalWheel(position, quickWindow->mapToGlobal(position),
+                                    QPoint(-20, 0), QPoint(), Qt::NoButton,
+                                    Qt::NoModifier, Qt::ScrollUpdate, false);
+        QCoreApplication::sendEvent(quickWindow, &horizontalWheel);
+        QTRY_COMPARE(flick->property("contentX").toReal(), 140.0);
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "togglePreview"));
+        QTRY_COMPARE(flick->property("contentX").toReal(), 0.0);
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "togglePreview"));
+        QTRY_COMPARE(flick->property("contentX").toReal(), 140.0);
+
+        // Removing the wide block restores the normal centered column.
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "togglePreview"));
+        QVERIFY(editor->setProperty("text", QStringLiteral("A paragraph of text. ").repeated(30)));
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "togglePreview"));
+        QTRY_COMPARE(flick->property("contentX").toReal(), 0.0);
+        QTRY_VERIFY(qAbs(preview->property("x").toReal() * 2
+                         + preview->property("width").toReal()
+                         - flick->property("width").toReal()) <= 1.0);
+        backend.discardRecovery();
     }
 
     void scalesTouchpadScrollingAndCarriesMomentum() {

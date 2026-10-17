@@ -15,6 +15,8 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 - `Ctrl+S` saves. Unsaved documents use the XDG desktop portal file picker.
 - `Ctrl+Shift+S` saves as.
 - `Ctrl+O` opens a Markdown file through the portal picker.
+- `Ctrl+Shift+M` toggles a read-only preview of the rendered Markdown. The eye button
+  in the footer also toggles preview. Press `Escape` in preview to return to writing.
 - `Ctrl+P` opens the system print dialog.
 - `Ctrl+N` opens a new Omawrite window.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
