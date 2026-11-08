@@ -1,6 +1,7 @@
 #include "backend.h"
 
 #include <QClipboard>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
@@ -50,9 +51,8 @@ const QString textZoomSetting = QStringLiteral("text/zoom");
 const QString legacyFontSizeSetting = QStringLiteral("editor/fontSize");
 
 // The user's own text size, multiplied onto the desktop's text scale.
-// Chromium's zoom ladder, trimmed to the range the whole window still reads
-// well at, so Ctrl+wheel here steps like Ctrl+wheel in a browser.
-constexpr qreal textZoomSteps[] = {0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0};
+// Browser-sized steps, with a wider range for small and large displays.
+constexpr qreal textZoomSteps[] = {0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0};
 constexpr int textZoomStepCount = int(std::size(textZoomSteps));
 
 const QString editorFontSetting = QStringLiteral("editor/font");
@@ -168,24 +168,29 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     m_wordCountTimer.setSingleShot(true);
     m_wordCountTimer.setInterval(120);
     connect(&m_wordCountTimer, &QTimer::timeout, this, &Backend::refreshWordCount);
+    connect(&m_wordCountWatcher, &QFutureWatcher<int>::finished, this, [this] {
+        if (!m_wordCountStale)
+            setWordCount(m_wordCountWatcher.result());
+        if (m_wordCountAgain) {
+            m_wordCountAgain = false;
+            refreshWordCount();
+        }
+    });
     m_recoveryTimer.setSingleShot(true);
     m_recoveryTimer.setInterval(750);
     connect(&m_recoveryTimer, &QTimer::timeout, this, &Backend::writeRecovery);
     m_autoSaveTimer.setSingleShot(true);
     m_autoSaveTimer.setInterval(500);
     connect(&m_autoSaveTimer, &QTimer::timeout, this, &Backend::autoSave);
-    connect(&m_fileWatcher, &QFileSystemWatcher::fileChanged, this,
-            [this](const QString &path) {
-                if (path != m_fileUrl.toLocalFile())
-                    return;
-
-                // Atomic saves replace the watched inode, which drops it from
-                // the watcher, so re-arm it either way. Our own save is not an
-                // outside edit.
-                watchCurrentFile();
-                if (!diskMatchesKnownContents())
-                    reportExternalChange(!QFileInfo::exists(path));
-            });
+    // Tools that replace a file by removing it and writing it again leave it
+    // briefly missing, so let the burst settle before deciding what happened.
+    m_fileCheckTimer.setSingleShot(true);
+    m_fileCheckTimer.setInterval(100);
+    connect(&m_fileCheckTimer, &QTimer::timeout, this, &Backend::checkWatchedFile);
+    connect(&m_fileWatcher, &QFileSystemWatcher::fileChanged, &m_fileCheckTimer,
+            qOverload<>(&QTimer::start));
+    connect(&m_fileWatcher, &QFileSystemWatcher::directoryChanged, &m_fileCheckTimer,
+            qOverload<>(&QTimer::start));
 
     loadOmarchyTheme();
     watchOmarchyTheme();
@@ -287,6 +292,7 @@ void Backend::attachDocument(QObject *textDocument) {
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground, m_themeAccent,
                             m_themeCodeBackground);
+    m_highlighter->setCaret(m_caretPosition);
 
     connect(m_document, &QTextDocument::contentsChange, this,
             [this](int position, int, int charsAdded) {
@@ -555,39 +561,10 @@ bool Backend::editorTextChanged() {
     return true;
 }
 
-QVariantList Backend::hiddenRangesAt(int position) const {
-    QVariantList ranges;
-    if (!m_document)
-        return ranges;
-
-    const QTextBlock block =
-        m_document->findBlock(qBound(0, position, m_document->characterCount() - 1));
-    if (!block.isValid())
-        return ranges;
-
-    // The highlighter leaves fenced code alone, so it hides nothing there. A
-    // closing fence is the line whose previous block is still inside.
-    if (block.userState() >= MarkdownHighlighter::InsideFence
-            || block.previous().userState() >= MarkdownHighlighter::InsideFence)
-        return ranges;
-
-    const int lineStart = block.position();
-    QList<QPair<int, int>> spans;
-    const QList<MarkdownHighlighter::InlineMarkup> markup =
-        MarkdownHighlighter::inlineMarkup(block.text());
-    for (const MarkdownHighlighter::InlineMarkup &item : markup) {
-        for (const MarkdownHighlighter::Span &marker : item.markers) {
-            spans.append({lineStart + marker.start,
-                          lineStart + marker.start + marker.length});
-        }
-    }
-    std::sort(spans.begin(), spans.end());
-
-    for (const auto &span : spans) {
-        ranges.append(QVariantMap{{QStringLiteral("start"), span.first},
-                                  {QStringLiteral("end"), span.second}});
-    }
-    return ranges;
+void Backend::setCaretPosition(int position) {
+    m_caretPosition = position;
+    if (m_highlighter)
+        m_highlighter->setCaret(position);
 }
 
 // The emphasis span of the marker's kind that the caret sits in or against,
@@ -716,18 +693,14 @@ void Backend::openExternalUrl(const QUrl &url) {
         QDesktopServices::openUrl(url);
 }
 
-// Matched the way the highlighter matches, so the offsets agree with what it
-// paints even where lowercasing changes a string's length.
+// Found by the highlighter's own matcher, so the offsets agree with what it
+// paints, diacritics and all.
 QVariantList Backend::searchMatches(const QString &query) const {
     QVariantList matches;
     if (query.isEmpty())
         return matches;
-    const QString text = currentDocumentText();
-    int from = 0;
-    while ((from = text.indexOf(query, from, Qt::CaseInsensitive)) >= 0) {
-        matches.append(from);
-        from += query.length();
-    }
+    for (const int start : MarkdownHighlighter::findMatches(currentDocumentText(), query))
+        matches.append(start);
     return matches;
 }
 
@@ -852,6 +825,8 @@ void Backend::loadDocumentText(const QString &text) {
 
     applyDocumentTypography();
     m_wordCountTimer.stop();
+    m_wordCountStale = true;
+    m_wordCountAgain = false;
     setWordCount(countWords(text));
 }
 
@@ -1060,15 +1035,39 @@ void Backend::clearRecovery() {
 }
 
 void Backend::unwatchFiles() {
-    const QStringList watched = m_fileWatcher.files();
+    m_fileCheckTimer.stop();
+    const QStringList watched = m_fileWatcher.files() + m_fileWatcher.directories();
     if (!watched.isEmpty())
         m_fileWatcher.removePaths(watched);
 }
 
+// A missing file cannot be watched, so watch its folder instead to notice it
+// coming back.
 void Backend::watchCurrentFile() {
     unwatchFiles();
-    if (m_fileUrl.isLocalFile() && QFileInfo::exists(m_fileUrl.toLocalFile()))
-        m_fileWatcher.addPath(m_fileUrl.toLocalFile());
+    if (!m_fileUrl.isLocalFile())
+        return;
+    const QFileInfo info(m_fileUrl.toLocalFile());
+    m_fileMissing = !info.exists();
+    if (info.exists())
+        m_fileWatcher.addPath(info.filePath());
+    else if (info.dir().exists())
+        m_fileWatcher.addPath(info.dir().path());
+}
+
+void Backend::checkWatchedFile() {
+    // Atomic saves replace the watched inode, which drops it from the
+    // watcher, so re-arm it either way. Our own save is not an outside edit.
+    const bool wasMissing = m_fileMissing;
+    watchCurrentFile();
+    if (diskMatchesKnownContents())
+        return;
+    // A file that was already missing has been reported, or was never there.
+    // One that turns up again is an outside edit like any other, even while
+    // the writer is still looking at the removal.
+    if (m_fileMissing && wasMissing)
+        return;
+    reportExternalChange(m_fileMissing);
 }
 
 // A quoted TOML value ends at its closing quote; whatever trails it is an inline comment.
@@ -1237,9 +1236,10 @@ QString Backend::currentDocumentText() const {
 int Backend::countWords(const QString &text) {
     // Only letters and numbers: PCRE2 reads \p{Han} as Script_Extensions, which
     // puts 。 、 「 and the CJK radicals in Han and would count each as a word.
-    static const QRegularExpression cjkRe(
+    // One per thread, as loading a file counts here while a worker may too.
+    thread_local const QRegularExpression cjkRe(
         QStringLiteral("(?=[\\p{L}\\p{N}])[\\p{Han}\\p{Hiragana}\\p{Katakana}]"));
-    static const QRegularExpression wordRe(
+    thread_local const QRegularExpression wordRe(
         QStringLiteral("[\\p{L}\\p{N}]+(?:['-][\\p{L}\\p{N}]+)*"));
 
     // Count unspaced Han and kana characters individually, then replace them
@@ -1284,7 +1284,15 @@ void Backend::setWordCount(int words) {
 }
 
 void Backend::refreshWordCount() {
-    setWordCount(countWords(currentDocumentText()));
+    // One count at a time; edits made while it runs get one more after it.
+    if (m_wordCountWatcher.isRunning()) {
+        m_wordCountAgain = true;
+        return;
+    }
+    // editorTextChanged keeps m_lastDocumentText current, and handing the
+    // worker that shared copy saves reading the whole document out again.
+    m_wordCountStale = false;
+    m_wordCountWatcher.setFuture(QtConcurrent::run(&Backend::countWords, m_lastDocumentText));
 }
 
 void Backend::scheduleWordCount() {

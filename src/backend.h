@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QByteArray>
 #include <QFileSystemWatcher>
+#include <QFutureWatcher>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -88,7 +89,7 @@ public:
     Q_INVOKABLE QString clipboardUrl() const;
     Q_INVOKABLE QString clipboardText() const;
     Q_INVOKABLE bool editorTextChanged();
-    Q_INVOKABLE QVariantList hiddenRangesAt(int position) const;
+    Q_INVOKABLE void setCaretPosition(int position);
     Q_INVOKABLE QString linkUrlAt(int position) const;
     Q_INVOKABLE QVariantMap emphasisSpanAt(int position, const QString &marker) const;
     Q_INVOKABLE int cursorPositionStep(int position, int direction) const;
@@ -146,6 +147,7 @@ private:
     void setKnownFileContents(const QByteArray &contents, bool known);
     void unwatchFiles();
     void watchCurrentFile();
+    void checkWatchedFile();
     void loadOmarchyTheme();
     void watchOmarchyTheme();
 
@@ -163,12 +165,20 @@ private:
     int m_lastChangePos = 0;
     int m_lastChangeAdded = 0;
     QTimer m_wordCountTimer;
+    // Counting a large document stalls typing, so counts run on a worker
+    // thread. A load outdates the count in flight, and its result is dropped.
+    QFutureWatcher<int> m_wordCountWatcher;
+    bool m_wordCountStale = false;
+    bool m_wordCountAgain = false;
     QTimer m_recoveryTimer;
     QTimer m_autoSaveTimer;
     QFileSystemWatcher m_fileWatcher;
+    QTimer m_fileCheckTimer;
+    bool m_fileMissing = false;
     QPointer<QTextDocument> m_document;
     QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;
+    int m_caretPosition = 0;
     QString m_lastDocumentText;
     QByteArray m_lastKnownFileContents;
     QString m_lastKnownFileText;

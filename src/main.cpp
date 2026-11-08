@@ -14,13 +14,20 @@
 #include "cli.h"
 #include "systemtheme.h"
 
-#define OMAWRITE_VERSION "0.7.0"
+#define OMAWRITE_VERSION "0.7.2"
 
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
     if (const std::optional<int> exitCode =
             Cli::handleArguments(argc, argv, QStringLiteral(OMAWRITE_VERSION)))
         return *exitCode;
+
+    // Omarchy asks Qt for GTK 3 dialogs, which run inside this process, and a
+    // long-standing GTK 3 file chooser assertion aborts the whole app, unsaved
+    // text and all. The desktop portal shows the same chooser from a process
+    // of its own.
+    if (qgetenv("QT_QPA_PLATFORMTHEME") == "gtk3")
+        qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
 
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("omawrite"));
